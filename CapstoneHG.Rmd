@@ -1,0 +1,130 @@
+---
+title: "CapstoneHG"
+author: "SarahCannon"
+date: "June 24, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+setwd("/Users/glencannon/Desktop/136")
+
+#install.packages("tidytext")
+library(tidytext)
+
+#install.packages("pdftools")
+library(pdftools)
+
+#install.packages("stringr")
+library(stringr)
+
+library(dplyr)
+library(tidyr)
+
+```
+
+#Bring in the OPs and SPs!
+
+```{r}
+download.file("https://www.oakville.ca/assets/2011%20planning/Part%20E%2004-04-2017.pdf", "Part%20E%2004-04-2017.pdf")
+parte <- pdf_text("Part%20E%2004-04-2017.pdf")
+
+pe <- strsplit(parte, "\n")
+
+head(pe)
+
+#playing with indexing for future reference
+#To get the contents of a sub list:
+#pe[[13]]
+
+#To get a specific policy:
+#pe[[13]][28]
+
+peun <- data.frame(unlist(pe, recursive = TRUE))
+
+colnames(peun) <- "optext"
+
+peun$optext <- as.character(peun$optext)
+
+peun$hf <- ifelse(startsWith(peun$optext, "Livable"), "hf", "")
+peun$hf <- ifelse(startsWith(peun$optext, "E-"), "hf", peun$hf)
+peun$hf <- ifelse(startsWith(peun$optext, "Last"), "hf", peun$hf)
+peun$hf <- ifelse(startsWith(peun$optext, "Part E:"), "hf", peun$hf)
+
+peun$pol <- as.numeric(grepl("^[0-9]", peun$optext))
+
+peun$sec <- ifelse(peun$pol == 1, word(peun$optext), '')
+
+secnum <- "20."
+rw <- 1
+
+for (rw in c(1:length(peun$sec))) {
+  if (peun$sec[rw] == '') {
+    peun$sec[rw] <- secnum
+    rw == rw + 1
+  } else {
+    secnum <- peun$sec[rw]
+    rw == rw + 1
+  }
+}
+
+```
+
+#And now, tidytext
+
+```{r}
+#let's use unnest tokens because it's tibble time, y'all
+peuntib <- peun %>% unnest_tokens(word, optext)
+
+#remove stop words
+data("stop_words")
+
+peuntib <- peuntib %>% anti_join(stop_words)
+
+peuntibct <- peuntib %>% group_by(sec) %>% count(word, sort = TRUE)
+
+
+```
+
+#Find key words and merge
+
+```{r}
+#Make subsets of records with the keywords
+ptc_growth <- subset(peuntibct, peuntibct$word == "growth")
+ptc_dir <- subset(peuntibct, peuntibct$word == "directed")
+ptc_number <- subset(peuntibct, grepl("^[0-9]", peuntibct$word))
+ptc_max <- subset(peuntibct, peuntibct$word == "maximum")
+ptc_min <- subset(peuntibct, peuntibct$word == "minimum")
+ptc_development <- subset(peuntibct, peuntibct$word == "development")
+
+colnames(ptc_growth) <- c("gsec", "gword", "gn")
+colnames(ptc_dir) <- c("dirsec", "dirword", "dirn")
+colnames(ptc_number) <- c("nsec", "nword", "nn")
+colnames(ptc_max) <- c("maxsec", "maxword", "maxn")
+colnames(ptc_min) <- c("minsec", "minword", "minn")
+colnames(ptc_development) <- c("devsec", "devword", "devn")
+
+#ptc_number needs some editing because it's the only case where there can be multiple entries (aka numbers) per policy...
+ptc_number <- subset(ptc_number, ptc_number$nsec != ptc_number$nword)
+ptc_number <- ptc_number %>% group_by(nsec) %>% summarise(nword = n_distinct(nword))
+
+#Make a master list of all sections
+Esec <- data.frame(unique(peun$sec))
+colnames(Esec) <- c("sec")
+
+#Merge the keywords
+m1 <- merge(Esec, ptc_growth, by.x = "sec", by.y = "gsec", all.x = TRUE)
+m2 <- merge(m1, ptc_dir, by.x = "sec", by.y = "dirsec", all.x = TRUE)
+m3 <- merge(m2, ptc_number, by.x = "sec", by.y = "nsec", all.x = TRUE)
+m4 <- merge(m3, ptc_max, by.x = "sec", by.y = "maxsec", all.x = TRUE)
+m5 <- merge(m4, ptc_min, by.x = "sec", by.y = "minsec", all.x = TRUE)
+kwsec <- merge(m5, ptc_development, by.x = "sec", by.y = "devsec", all.x = TRUE)
+
+#Add columns to store relevant info
+kwsec$kwct <- rowSums(kwsec[,c(3,5,6,8,10,12)], na.rm = TRUE)
+
+```
+
+
+
