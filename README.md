@@ -1,2 +1,2 @@
 # ckme136
-Capstone project that assesses development applications' fit with official plan policy
+Capstone project that assesses whether or not individual development applications support official plan policy.
