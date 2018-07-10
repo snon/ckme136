@@ -8,7 +8,7 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
-setwd("/Users/glencannon/Desktop/136")
+setwd("P:/Capstone")
 
 #install.packages("tidytext")
 library(tidytext)
@@ -19,56 +19,55 @@ library(pdftools)
 #install.packages("stringr")
 library(stringr)
 
+#install.packages("DMwR")
+library(DMwR)
+
+install.packages("e1071")
+library(e1071)
+
 library(dplyr)
 library(tidyr)
 
 ```
 
-#Bring in the OPs and SPs!
+#Pard D of Oakville's Official Plan contains land use permissions.
 
 ```{r}
-download.file("https://www.oakville.ca/assets/2011%20planning/Part%20E%2004-04-2017.pdf", "Part%20E%2004-04-2017.pdf")
-parte <- pdf_text("Part%20E%2004-04-2017.pdf")
+download.file("https://www.oakville.ca/assets/2011%20planning/Part%20D%2004-04-2017.pdf", "Part%20D%2004-04-2017.pdf")
+partd <- pdf_text("Part%20D%2004-04-2017.pdf")
 
-pe <- strsplit(parte, "\n")
+pd <- strsplit(partd, "\n")
 
-head(pe)
+head(pd)
 
-#playing with indexing for future reference
-#To get the contents of a sub list:
-#pe[[13]]
+pdun <- data.frame(unlist(pd, recursive = TRUE))
 
-#To get a specific policy:
-#pe[[13]][28]
+colnames(pdun) <- "pdoptext"
 
-peun <- data.frame(unlist(pe, recursive = TRUE))
+pdun$pdoptext <- as.character(pdun$pdoptext)
 
-colnames(peun) <- "optext"
+pdun$dhf <- ifelse(startsWith(pdun$pdoptext, "Livable"), "hf", "")
+pdun$dhf <- ifelse(startsWith(pdun$pdoptext, "D-"), "hf", pdun$dhf)
+pdun$dhf <- ifelse(startsWith(pdun$pdoptext, "Last"), "hf", pdun$dhf)
+pdun$dhf <- ifelse(startsWith(pdun$pdoptext, "Part D:"), "hf", pdun$dhf)
+pdun$dhf <- ifelse(endsWith(pdun$pdoptext, "blank."), "hf", pdun$dhf)
 
-peun$optext <- as.character(peun$optext)
+pdun$dpol <- as.numeric(grepl("^[0-9]", pdun$pdoptext))
 
-peun$hf <- ifelse(startsWith(peun$optext, "Livable"), "hf", "")
-peun$hf <- ifelse(startsWith(peun$optext, "E-"), "hf", peun$hf)
-peun$hf <- ifelse(startsWith(peun$optext, "Last"), "hf", peun$hf)
-peun$hf <- ifelse(startsWith(peun$optext, "Part E:"), "hf", peun$hf)
+pdun$dsec <- ifelse(pdun$dpol == 1, word(pdun$pdoptext), '')
 
-peun$pol <- as.numeric(grepl("^[0-9]", peun$optext))
-
-peun$sec <- ifelse(peun$pol == 1, word(peun$optext), '')
-
-secnum <- "20."
+secnum <- "11."
 rw <- 1
 
-for (rw in c(1:length(peun$sec))) {
-  if (peun$sec[rw] == '') {
-    peun$sec[rw] <- secnum
+for (rw in c(1:length(pdun$dsec))) {
+  if (pdun$dsec[rw] == '') {
+    pdun$dsec[rw] <- secnum
     rw == rw + 1
   } else {
-    secnum <- peun$sec[rw]
+    secnum <- pdun$dsec[rw]
     rw == rw + 1
   }
 }
-
 ```
 
 #And now, tidytext
@@ -87,44 +86,197 @@ peuntibct <- peuntib %>% group_by(sec) %>% count(word, sort = TRUE)
 
 ```
 
-#Find key words and merge
+#Now for Part D tibble time...
+
+```{r}
+#let's use unnest tokens because it's tibble time, y'all
+pduntib <- pdun %>% unnest_tokens(word, pdoptext)
+
+#remove stop words
+data("stop_words")
+
+pduntib <- pduntib %>% anti_join(stop_words)
+
+pduntibct <- pduntib %>% group_by(dsec) %>% count(word, sort = TRUE)
+```
+
+#Find key words and merge - this will indicate
 
 ```{r}
 #Make subsets of records with the keywords
-ptc_growth <- subset(peuntibct, peuntibct$word == "growth")
-ptc_dir <- subset(peuntibct, peuntibct$word == "directed")
-ptc_number <- subset(peuntibct, grepl("^[0-9]", peuntibct$word))
-ptc_max <- subset(peuntibct, peuntibct$word == "maximum")
-ptc_min <- subset(peuntibct, peuntibct$word == "minimum")
-ptc_development <- subset(peuntibct, peuntibct$word == "development")
+ptcd_units <- subset(pduntibct, pduntibct$word == "units")
+ptcd_dir <- subset(pduntibct, pduntibct$word == "directed")
+ptcd_number <- subset(pduntibct, grepl("^[0-9]", pduntibct$word))
+ptcd_max <- subset(pduntibct, pduntibct$word == "maximum")
+ptcd_min <- subset(pduntibct, pduntibct$word == "minimum")
+ptcd_storeys <- subset(pduntibct, pduntibct$word == "storeys")
+ptcd_puse <- subset(pduntibct, pduntibct$word == "permitted")
+ptcd_pro <- subset(pduntibct, pduntibct$word == "prohibited")
 
-colnames(ptc_growth) <- c("gsec", "gword", "gn")
-colnames(ptc_dir) <- c("dirsec", "dirword", "dirn")
-colnames(ptc_number) <- c("nsec", "nword", "nn")
-colnames(ptc_max) <- c("maxsec", "maxword", "maxn")
-colnames(ptc_min) <- c("minsec", "minword", "minn")
-colnames(ptc_development) <- c("devsec", "devword", "devn")
+
+colnames(ptcd_units) <- c("usec", "uword", "un")
+colnames(ptcd_dir) <- c("dirsec", "dword", "dn")
+colnames(ptcd_number) <- c("nsec", "nword", "nn")
+colnames(ptcd_max) <- c("maxsec", "maxword", "maxn")
+colnames(ptcd_min) <- c("minsec", "minword", "minn")
+colnames(ptcd_storeys) <- c("ssec", "sword", "sevn")
+colnames(ptcd_puse) <- c("psec", "pword", "pn")
+colnames(ptcd_pro) <- c("prosec", "proword", "pron")
 
 #ptc_number needs some editing because it's the only case where there can be multiple entries (aka numbers) per policy...
-ptc_number <- subset(ptc_number, ptc_number$nsec != ptc_number$nword)
-ptc_number <- ptc_number %>% group_by(nsec) %>% summarise(nword = n_distinct(nword))
+ptcd_number <- subset(ptcd_number, ptcd_number$nsec != ptcd_number$nword)
+ptcd_number <- ptcd_number %>% group_by(nsec) %>% summarise(nword = n_distinct(nword))
 
 #Make a master list of all sections
-Esec <- data.frame(unique(peun$sec))
-colnames(Esec) <- c("sec")
+Dsec <- data.frame(unique(pdun$dsec))
+colnames(Dsec) <- c("dsec")
 
 #Merge the keywords
-m1 <- merge(Esec, ptc_growth, by.x = "sec", by.y = "gsec", all.x = TRUE)
-m2 <- merge(m1, ptc_dir, by.x = "sec", by.y = "dirsec", all.x = TRUE)
-m3 <- merge(m2, ptc_number, by.x = "sec", by.y = "nsec", all.x = TRUE)
-m4 <- merge(m3, ptc_max, by.x = "sec", by.y = "maxsec", all.x = TRUE)
-m5 <- merge(m4, ptc_min, by.x = "sec", by.y = "minsec", all.x = TRUE)
-kwsec <- merge(m5, ptc_development, by.x = "sec", by.y = "devsec", all.x = TRUE)
+dm1 <- merge(Dsec, ptcd_units, by.x = "dsec", by.y = "usec", all.x = TRUE)
+dm2 <- merge(dm1, ptcd_dir, by.x = "dsec", by.y = "dirsec", all.x = TRUE)
+dm3 <- merge(dm2, ptcd_number, by.x = "dsec", by.y = "nsec", all.x = TRUE)
+dm4 <- merge(dm3, ptcd_max, by.x = "dsec", by.y = "maxsec", all.x = TRUE)
+dm5 <- merge(dm4, ptcd_min, by.x = "dsec", by.y = "minsec", all.x = TRUE)
+dm6 <- merge(dm5, ptcd_storeys, by.x = "dsec", by.y = "ssec", all.x = TRUE)
+dm7 <- merge(dm6, ptcd_puse, by.x = "dsec", by.y = "psec", all.x = TRUE)
+kwdsec <- merge(dm7, ptcd_pro, by.x = "dsec", by.y = "prosec", all.x = TRUE) 
 
 #Add columns to store relevant info
-kwsec$kwct <- rowSums(kwsec[,c(3,5,6,8,10,12)], na.rm = TRUE)
+kwdsec$kwct <- rowSums(kwdsec[,c(3,5,6,8,10,12,14,16)], na.rm = TRUE)
+```
+
+#Looking at bps
+
+```{r}
+bpza <- read.csv("P:/Capstone/bpza.csv", stringsAsFactors = FALSE)
+
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Residential"), "Res", "")
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Commercial"), "Com", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Industrial"), "Ind", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Institutional"), "Inst", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Demolition"), "Dem", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Fire"), "Fire", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Plumbing"), "Plu", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Town"), "Res", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Tent"), "Misc", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Miscellaneous"), "Misc", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Accessory"), "Res", bpza$type)
+
 
 ```
 
+#Focus on residential
 
+```{r}
+resbpza <- subset(bpza, bpza$type == "Res" & bpza$CLASS != "")
+resbp <- resbpza[,c(2,3,4,5,6,9,23,30,34)]
+
+#collapsing class - consider res and no res
+resbp$clcol <- ifelse(startsWith(resbp$CLASS, "Residential Low"), "reslow", "")
+resbp$clcol <- ifelse(startsWith(resbp$CLASS, "Residential Medium"), "resmed", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$CLASS, "Residential High"), "reshigh", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$CLASS, "Residential Uptown"), "resutc", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$CLASS, "Central Business"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$CLASS, "Main"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$CLASS, "Urban Core"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$CLASS, "Urban Centre"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$CLASS, "Park"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$CLASS, "Natural"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$CLASS, "Instituational"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$CLASS, "Community"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$CLASS, "Parkway"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$CLASS, "Existing"), "nres", resbp$clcol)
+
+```
+
+#Get res building types and growth area; exclude "other" permits
+
+```{r}
+#res dwelling types
+resbp$dwtype <- ifelse(startsWith(resbp$DESCRIPTIO, "Single"), "low", "")
+resbp$dwtype <- ifelse(startsWith(resbp$DESCRIPTIO, "Semi"), "low", resbp$dwtype)
+resbp$dwtype <- ifelse(startsWith(resbp$DESCRIPTIO, "Row"), "med", resbp$dwtype)
+resbp$dwtype <- ifelse(endsWith(resbp$DESCRIPTIO, "Apartment"), "high", resbp$dwtype)
+resbp$dwtype <- ifelse(resbp$dwtype == "", "other", resbp$dwtype)
+
+#Growth area yes or no
+resbp$ga <- ifelse(resbp$GROWTH_ARE == "", "no", "yes")
+
+#Exclude permits that fall into the "other" category
+resbp <- subset(resbp, !(resbp$dwtype == "other"))
+
+```
+
+#calculate what makes a good permit
+
+```{r}
+#If the building dwelling type corresponds to the OP, we're good, otherwise, we're not
+resbp$align <- 0
+resbp$align[resbp$clcol == "reslow" & resbp$dwtype == "low"] <- 1
+resbp$align[resbp$clcol == "resmed" & resbp$dwtype == "med"] <- 1
+resbp$align[resbp$clcol == "reshigh" & resbp$dwtype == "high"] <- 1
+
+#Let's look at that class attribute balance:
+table(resbp$align)
+#eek!
+
+```
+
+#SMOTE to the rescue!!!
+
+```{r}
+#Create a new dataset with more balanced classes
+#Make the class attribute a factor
+resbp$align <- as.factor(resbp$align)
+
+#only have relevant columns
+resbpmod <- resbp[,c(10:13)]
+
+#Make everything a factor!
+resbpmod[,1] <- as.factor(resbpmod[,1])
+resbpmod[,2] <- as.factor(resbpmod[,2])
+resbpmod[,3] <- as.factor(resbpmod[,3])
+
+bal_resbpmod <- SMOTE(align ~ ., resbpmod, perc.over = 700, k = 3, perc.under = 100)
+table(bal_resbpmod$align)
+
+```
+
+#Now that we've smoted we can logistic regression!!!
+
+```{r}
+bpmodel <- glm(align ~ dwtype + clcol + ga, data = bal_resbpmod, family = "binomial")
+summary(bpmodel)
+
+predbp <- predict(bpmodel, type = 'response')
+table(bal_resbpmod$align, predbp > 0.5)
+
+bp_precision <- 595 / (595+181)
+bp_recall <- 595 / (595 +23)
+bp_F1 <- 2*((bp_precision * bp_recall)/(bp_precision + bp_recall))
+
+results <- c(bp_precision, bp_recall, bp_F1)
+results
+
+#Not bad!!!
+
+```
+
+#Now that we've logistic regressioned we can naive bayes!
+
+```{r}
+bpmodelnb <- naiveBayes(align ~ dwtype + clcol + ga, data = bal_resbpmod)
+bpmodelnb
+
+predbpnb <- predict(bpmodelnb, bal_resbpmod)
+
+table(predbpnb, bal_resbpmod$align)
+
+bpnb_precision <- 618 / (618+190)
+bpnb_recall <- 618 / (618+158)
+bpnb_F1 <- 2*((bpnb_precision * bpnb_recall)/(bpnb_precision + bpnb_recall))
+resultsnb <- c(bpnb_precision, bpnb_recall, bpnb_F1)
+resultsnb
+
+```
 
