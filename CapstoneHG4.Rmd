@@ -1,0 +1,527 @@
+---
+title: "CapstoneHG"
+author: "SarahCannon"
+date: "June 24, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+setwd("P:/Capstone")
+
+#install.packages("tidytext")
+library(tidytext)
+
+#install.packages("pdftools")
+library(pdftools)
+
+#install.packages("stringr")
+library(stringr)
+
+#install.packages("DMwR")
+library(DMwR)
+
+#install.packages("e1071")
+library(e1071)
+
+#install.packages("pROC")
+library(pROC)
+
+library(dplyr)
+library(tidyr)
+
+```
+
+#Let's start with permitted uses...
+
+```{r}
+download.file("https://www.oakville.ca/assets/2011%20planning/Part%20D%2004-04-2017.pdf", "Part%20D%2004-04-2017.pdf")
+#partd <- pdf_text("Part%20D%2004-04-2017.pdf")
+
+partd <-pdf_text("Part D 04-04-2017.pdf")
+
+pd <- strsplit(partd, "\n")
+
+#head(pd)
+
+pdun <- data.frame(unlist(pd, recursive = TRUE))
+
+colnames(pdun) <- "pdoptext"
+
+pdun$pdoptext <- as.character(pdun$pdoptext)
+
+pdun$dhf <- ifelse(startsWith(pdun$pdoptext, "Livable"), "hf", "")
+pdun$dhf <- ifelse(startsWith(pdun$pdoptext, "D-"), "hf", pdun$dhf)
+pdun$dhf <- ifelse(startsWith(pdun$pdoptext, "Last"), "hf", pdun$dhf)
+pdun$dhf <- ifelse(startsWith(pdun$pdoptext, "Part D:"), "hf", pdun$dhf)
+pdun$dhf <- ifelse(endsWith(pdun$pdoptext, "blank."), "hf", pdun$dhf)
+
+pdun$dpol <- as.numeric(grepl("^[0-9]", pdun$pdoptext))
+
+pdun$dsec <- ifelse(pdun$dpol == 1, word(pdun$pdoptext), '')
+
+secnum <- "11."
+rw <- 1
+
+for (rw in c(1:length(pdun$dsec))) {
+  if (pdun$dsec[rw] == '') {
+    pdun$dsec[rw] <- secnum
+    rw == rw + 1
+  } else {
+    secnum <- pdun$dsec[rw]
+    rw == rw + 1
+  }
+}
+
+#Playing with extracting permitted uses
+pdun$pdoptext <- trimws(pdun$pdoptext, which = "both")
+pdun_pusesec <- subset(pdun, endsWith(pdun$pdoptext, "Permitted Uses"))
+dsectitle <- data.frame("section" = substr(pdun_pusesec$dsec, 1, 4))
+
+optitle <- subset(pdun, pdun$dsec %in% dsectitle$section & pdun$dpol == 1)
+optitle$name <- substr(optitle$pdoptext, 6, nchar(optitle$pdoptext))
+optitle$name <- trimws(optitle$name)
+
+#Cleaning up the "generals"
+gentitle <- which(optitle$name == "General")
+optitle[gentitle, 5] <- c("Institutional", "Natural Area", "Utility")
+
+#Add the "permitted uses" section references and text
+optitle$dsecpu <- paste(optitle$dsec, ".1", sep = "")
+op_puse <- merge(optitle, pdun, by.x = "dsecpu", by.y = "dsec", all.x = TRUE)
+
+#Clean it up
+op_puse <- subset(op_puse, op_puse$dhf.y != "hf" & op_puse$dpol.y == "0")
+op_puse <- op_puse[,c(1,6:7)]
+colnames(op_puse) <- c("pusec", "luse", "permuse")
+
+```
+
+#Tibble the op_puse
+
+```{r}
+oppu_tib <- op_puse %>% unnest_tokens(word, permuse)
+
+#remove stop words
+data("stop_words")
+
+oppu_tib <- oppu_tib %>% anti_join(stop_words)
+
+oppu_tib$word <- ifelse(endsWith(oppu_tib$word, "s"), substr(oppu_tib$word, 1, nchar(oppu_tib$word)-1), oppu_tib$word)
+
+oppu <- oppu_tib %>% group_by(pusec) %>% mutate(pusewords = paste0(word, collapse = " ")) %>% summarize(luse = first(luse), pusewords = first(pusewords))
+
+oppu$pusewords <- tolower(oppu$pusewords)
+oppu$pusec <- tolower(oppu$pusec)
+oppu$luse <- tolower(oppu$luse)
+```
+
+#And now for building permits!
+
+```{r}
+bpza <- read.csv("bpza.csv", stringsAsFactors = FALSE)
+
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Residential"), "Res", "")
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Commercial"), "Com", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Industrial"), "Ind", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Institutional"), "Inst", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Demolition"), "Dem", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Fire"), "Fire", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Plumbing"), "Plu", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Town"), "Res", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Tent"), "Misc", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Miscellaneous"), "Misc", bpza$type)
+bpza$type <- ifelse(startsWith(bpza$FOLDERTYPE, "Accessory"), "Res", bpza$type)
+
+#Streamline it...
+bps <- subset(bpza, bpza$type %in% c("Res", "Com", "Ind", "Inst") & bpza$CLASS != "")
+
+bps$CLASS <- trimws(bps$CLASS, which = "both")
+
+bps <- bps[,c(1,3,9,23,34)]
+
+bps$clclass <- regexpr("(\\()", bps$CLASS)
+
+bps$class <- ifelse(bps$clclass > 0, substr(bps$CLASS, 1, bps$clclass-1), bps$CLASS)
+
+bps <- bps[,c(1,2,4,5,7)]
+
+#to lower case!
+bps$DESCRIPTIO <- tolower(bps$DESCRIPTIO)
+bps$GROWTH_ARE <- tolower(bps$GROWTH_ARE)
+bps$type <- tolower(bps$type)
+bps$class <- tolower(bps$class)
+
+#fix up class values where necessary
+bps$class <- ifelse(bps$class == "instituational", "institutional", bps$class)
+bps$class <- ifelse(bps$class == "park", "parks and open space", bps$class)
+bps$class <- ifelse(bps$class == "parkway belt public use", "utility", bps$class)
+bps$class <- ifelse(bps$class == "residential high ", "high density residential", bps$class)
+bps$class <- ifelse(bps$class == "residential high", "high density residential", bps$class)
+bps$class <- ifelse(bps$class == "residential medium ", "medium density residential", bps$class)
+bps$class <- ifelse(bps$class == "residential low ", "low density residential", bps$class)
+bps$class <- ifelse(bps$class == "residential uptown core", "high density residential", bps$class)
+
+bps_pu <- merge(bps, oppu, by.x = "class", by.y = "luse", all.x = TRUE)
+
+bps_pug <- subset(bps_pu, !is.na(bps_pu$pusec))
+bps_pub <- subset(bps_pu, is.na(bps_pu$pusec))
+
+bps_punisec <- unique(bps_pu$pusec)
+bps_punisec <- na.omit(bps_punisec)
+
+pu_did <- data.frame(V1 = "", yes = "", OBJECTID = "")
+sec <- 1
+
+for (sec in c(1:length(bps_punisec))) {
+  pu_yu <- cbind(subset(bps_pu$DESCRIPTIO, bps_pu$pusec == bps_punisec[sec]), yes = grepl(paste(subset(oppu_tib$word, oppu_tib$pusec == bps_punisec[sec]), collapse = "|"), subset(bps_pu$DESCRIPTIO, bps_pu$pusec == bps_punisec[sec])), OBJECTID = subset(bps_pu$OBJECTID, bps_pu$pusec == bps_punisec[sec]))
+  pu_did <- rbind(pu_did, pu_yu)
+  sec == sec + 1
+}
+
+bps_pum <- merge(bps_pu, pu_did, by.x = "OBJECTID", by.y = "OBJECTID", all.x = TRUE)
+
+bps_pum$yes <- ifelse(is.na(bps_pum$yes), 3, bps_pum$yes)
+bps_pum$yes <- ifelse(bps_pum$yes == 3, TRUE, FALSE)
+
+```
+
+#add fields to classify phenomena in the permits
+
+```{r}
+#resbpza <- subset(bpza, bpza$type == "Res" & bpza$CLASS != "")
+resbp <- bps_pum
+
+#res dwelling types
+resbp$dwtype <- ifelse(startsWith(resbp$DESCRIPTIO, "single"), "low", "")
+resbp$dwtype <- ifelse(startsWith(resbp$DESCRIPTIO, "semi"), "low", resbp$dwtype)
+resbp$dwtype <- ifelse(startsWith(resbp$DESCRIPTIO, "row"), "med", resbp$dwtype)
+resbp$dwtype <- ifelse(endsWith(resbp$DESCRIPTIO, "apartment"), "high", resbp$dwtype)
+resbp$dwtype <- ifelse(resbp$dwtype == "", "nsm", resbp$dwtype)
+
+#Growth area yes or no
+resbp$ga <- ifelse(resbp$GROWTH_ARE == "", "no", "yes")
+
+#collapsing class - consider res and no res
+resbp$clcol <- ifelse(startsWith(resbp$class, "low density residential"), "reslow", "")
+resbp$clcol <- ifelse(startsWith(resbp$class, "medium density residential"), "resmed", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$class, "high density residential"), "reshigh", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$class, "high density residential"), "reshigh", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$class, "central business"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$class, "main"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$class, "urban core"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$class, "urban centre"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$class, "parks and open space"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$class, "natural area"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$class, "institutional"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$class, "community"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$class, "utility"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(startsWith(resbp$class, "existing development"), "nres", resbp$clcol)
+resbp$clcol <- ifelse(resbp$dwtype == "nsm", "nres", resbp$clcol)
+
+```
+
+#calculate what makes a good permit
+
+```{r}
+#Weights are given to different factors...
+resbp$y <- ifelse(resbp$yes == TRUE, 1, 0)
+resbp$gc <- ifelse(resbp$ga == "yes" & resbp$clcol == "nres", 1, 0)
+resbp$dc <- ifelse(resbp$dwtype == "nsm" & resbp$clcol == "nres", 2, 0) # it's two because of variation in nres building types vs res.
+resbp$dc <- ifelse(resbp$dwtype == substr(resbp$clcol, nchar(resbp$clcol) - (nchar(resbp$dwtype)-1), nchar(resbp$clcol)), 1, resbp$dc)
+
+resbp$score <- resbp$y + resbp$gc + resbp$dc
+
+#Hmm...you should be considered "contributing" if...
+#...permitted uses match:
+resbp$align <- ifelse(resbp$yes == TRUE, "yes", "no")
+
+#...non-residential in a growth area
+resbp$align <- ifelse(resbp$ga == "yes" & resbp$clcol == "nsm", "yes", resbp$align)
+
+#...res density aligns with designated density
+resbp$align <- ifelse(resbp$dwtype == substr(resbp$clcol, nchar(resbp$clcol) - (nchar(resbp$dwtype)-1), nchar(resbp$clcol)), "yes", resbp$align)
+
+#...non-residential permit in a non-residential land use
+resbp$align <- ifelse(resbp$clcol == "nres" & !(resbp$class %in% c("low density residential", "medium density residential", "high density residential")), "yes", resbp$align)
+
+#Check out the class balance...
+table(resbp$align)
+#eek!!!
+```
+
+#SMOTE will save me!!!
+
+```{r}
+#Create a new dataset with more balanced classes
+#Make the class attribute a factor
+resbp$align <- as.factor(resbp$align)
+
+#only have relevant columns
+resbpmod <- resbp[,c(2, 5, 9:12, 17)]
+
+#Make everything a factor!
+resbpmod[,1] <- as.factor(resbpmod[,1])
+resbpmod[,2] <- as.factor(resbpmod[,2])
+resbpmod[,3] <- as.factor(resbpmod[,3])
+resbpmod[,4] <- as.factor(resbpmod[,4])
+resbpmod[,5] <- as.factor(resbpmod[,5])
+resbpmod[,6] <- as.factor(resbpmod[,6])
+
+balbp <- SMOTE(align ~ ., resbpmod, perc.over = 300, k = 4, perc.under = 200)
+table(balbp$align)
+```
+
+#If you like logistic regression...(part 1)
+
+```{r}
+#Randomly shuffle the data
+balbp<-balbp[sample(nrow(balbp)),]
+
+#Create 10 equally size folds
+folds <- cut(seq(1,nrow(balbp)),breaks=10,labels=FALSE)
+
+pred <- data.frame(id = c(1:250))
+
+predtr <- data.frame (id = c(1:2250))
+
+#Perform 10 fold cross validation
+for(i in 1:10){
+    testIndexes <- which(folds==i,arr.ind=TRUE)
+    testbp <- balbp[testIndexes, ]
+    trainbp <- balbp[-testIndexes, ]
+    bpmodel <- glm(align ~ dwtype + clcol + ga, data = trainbp, family = "binomial")
+    pred1 <- predict(bpmodel, newdata = testbp, type = "response")
+    pred <- cbind(pred, testbp$align, pred1)
+    predtr1 <- predict(bpmodel, newdata = trainbp, type = "response")
+    predtr <- cbind(predtr, trainbp$align, predtr1)
+}
+
+colnames(pred) <- c("id", paste(c("a", "p"), rep(1:10, each = 2), sep = ""))
+
+colnames(predtr) <- c("id", paste(c("a", "p"), rep(1:10, each = 2), sep = ""))
+
+#Let's get some statistics happening!
+results <- data.frame(acc = is.null, prec = is.null, reca = is.null, F1 = is.null)
+y <- 2
+for (y in c(2,4,6,8,10,12,14,16,18,20)) {
+    cmt2 <- table(pred[,y], pred[,y+1] > .5)
+    acc <- (cmt2[1,1] + cmt2[2,2]) / (cmt2[1,1] + cmt2[2,2] + cmt2[1,2] + cmt2[2,2])
+    prec <- cmt2[2,2] / (cmt2[2,1] + cmt2[2,2])
+    reca <- cmt2[2,2] / (cmt2[2,2] + cmt2[1,2])
+    F1 <- 2*((prec*reca)/(prec+reca))
+    results1 <- data.frame(acc = acc, prec = prec, reca = reca, F1 = F1)
+    results <- rbind(results, results1)
+}
+
+#Let's get summary stats happening for the training set too!
+resultstr <- data.frame(acc = is.null, prec = is.null, reca = is.null, F1 = is.null)
+y <- 2
+for (y in c(2,4,6,8,10,12,14,16,18,20)) {
+    cmt3 <- table(predtr[,y], predtr[,y+1] > .5)
+    acc <- (cmt3[1,1] + cmt3[2,2]) / (cmt3[1,1] + cmt3[2,2] + cmt3[1,2] + cmt3[2,2])
+    prec <- cmt3[2,2] / (cmt3[2,1] + cmt3[2,2])
+    reca <- cmt3[2,2] / (cmt3[2,2] + cmt3[1,2])
+    F1 <- 2*((prec*reca)/(prec+reca))
+    results1tr <- data.frame(acc = acc, prec = prec, reca = reca, F1 = F1)
+    resultstr <- rbind(resultstr, results1tr)
+}
+
+write.csv(results, "results.csv")
+write.csv(resultstr, "resultstr.csv")
+
+summary(bpmodel) #from the tenth fold
+
+roc(a1~p1, data = pred, auc = TRUE, plot = TRUE)
+
+
+```
+
+
+#If you like logistic regression...(part 2)
+
+```{r}
+#Randomly shuffle the data
+#balbp<-balbp[sample(nrow(balbp)),]
+
+#Create 10 equally size folds
+#folds <- cut(seq(1,nrow(balbp)),breaks=10,labels=FALSE)
+
+pred2 <- data.frame(id = c(1:250))
+
+pred2tr <- data.frame (id = c(1:2250))
+
+#Perform 10 fold cross validation and the bpmodel - part 2
+for(i in 1:10){
+    testIndexes <- which(folds==i,arr.ind=TRUE)
+    testbp <- balbp[testIndexes, ]
+    trainbp <- balbp[-testIndexes, ]
+    bpmodel2 <- glm(align ~ yes + dwtype + clcol + ga, data = trainbp, family = "binomial")
+    pred21 <- predict(bpmodel2, newdata = testbp, type = "response")
+    pred2 <- cbind(pred2, testbp$align, pred21)
+    pred2tr1 <- predict(bpmodel2, newdata = trainbp, type = "response")
+    pred2tr <- cbind(pred2tr, trainbp$align, pred2tr1)
+}
+
+colnames(pred2) <- c("id", paste(c("a", "p"), rep(1:10, each = 2), sep = ""))
+
+colnames(pred2tr) <- c("id", paste(c("a", "p"), rep(1:10, each = 2), sep = ""))
+
+#Let's get some statistics happening!
+results2 <- data.frame(acc = is.null, prec = is.null, reca = is.null, F1 = is.null)
+y <- 2
+for (y in c(2,4,6,8,10,12,14,16,18,20)) {
+    cmt2 <- table(pred2[,y], pred2[,y+1] > .5)
+    acc <- (cmt2[1,1] + cmt2[2,2]) / (cmt2[1,1] + cmt2[2,2] + cmt2[1,2] + cmt2[2,2])
+    prec <- cmt2[2,2] / (cmt2[2,1] + cmt2[2,2])
+    reca <- cmt2[2,2] / (cmt2[2,2] + cmt2[1,2])
+    F1 <- 2*((prec*reca)/(prec+reca))
+    results21 <- data.frame(acc = acc, prec = prec, reca = reca, F1 = F1)
+    results2 <- rbind(results2, results21)
+}
+
+#Let's get summary stats happening for the training set too!
+results2tr <- data.frame(acc = is.null, prec = is.null, reca = is.null, F1 = is.null)
+y <- 2
+for (y in c(2,4,6,8,10,12,14,16,18,20)) {
+    cmt3 <- table(pred2tr[,y], pred2tr[,y+1] > .5)
+    acc <- (cmt3[1,1] + cmt3[2,2]) / (cmt3[1,1] + cmt3[2,2] + cmt3[1,2] + cmt3[2,2])
+    prec <- cmt3[2,2] / (cmt3[2,1] + cmt3[2,2])
+    reca <- cmt3[2,2] / (cmt3[2,2] + cmt3[1,2])
+    F1 <- 2*((prec*reca)/(prec+reca))
+    results21tr <- data.frame(acc = acc, prec = prec, reca = reca, F1 = F1)
+    results2tr <- rbind(results2tr, results21tr)
+}
+
+write.csv(results2, "results2.csv")
+write.csv(results2tr, "resultstr2.csv")
+
+summary(bpmodel2) #from the tenth fold
+
+roc(a1~p1, data = pred2, auc = TRUE, plot = TRUE)
+
+
+
+
+
+```
+
+
+#Naive Bayes time!!!
+
+```{r}
+#Randomly shuffle the data
+#balbp<-balbp[sample(nrow(balbp)),]
+
+#Create 10 equally size folds
+#folds <- cut(seq(1,nrow(balbp)),breaks=10,labels=FALSE)
+
+prednb <- data.frame(id = c(1:250))
+prednbtr <- data.frame(id = c(1:2250))
+#Perform 10 fold cross validation
+for(i in 1:10){
+    testIndexes <- which(folds==i,arr.ind=TRUE)
+    testbp <- balbp[testIndexes, ]
+    trainbp <- balbp[-testIndexes, ]
+    bpnpmodel <- naiveBayes(align ~ dwtype + clcol + ga, data = trainbp)
+    pred1nb <- predict(bpnpmodel, newdata = testbp)
+    prednb <- cbind(prednb, testbp$align, pred1nb)
+    pred1nbtr <- predict(bpnpmodel, newdata = trainbp)
+    prednbtr <- cbind(prednbtr, trainbp$align, pred1nbtr)
+}
+
+colnames(prednb) <- c("id", paste(c("a", "p"), rep(1:10, each = 2), sep = ""))
+
+colnames(prednbtr) <- c("id", paste(c("a", "p"), rep(1:10, each = 2), sep = ""))
+
+#Let's get some statistics happening!
+resultsnb <- data.frame(acc = is.null, prec = is.null, reca = is.null, F1 = is.null)
+y <- 2
+for (y in c(2,4,6,8,10,12,14,16,18,20)) {
+    cmt2 <- table(prednb[,y], prednb[,y+1])
+    acc <- (cmt2[1,1] + cmt2[2,2]) / (cmt2[1,1] + cmt2[2,2] + cmt2[1,2] + cmt2[2,2])
+    prec <- cmt2[2,2] / (cmt2[2,1] + cmt2[2,2])
+    reca <- cmt2[2,2] / (cmt2[2,2] + cmt2[1,2])
+    F1 <- 2*((prec*reca)/(prec+reca))
+    results1nb <- data.frame(acc = acc, prec = prec, reca = reca, F1 = F1)
+    resultsnb <- rbind(resultsnb, results1nb)
+}
+
+
+
+#Let's get summary stats happening for the training set too!
+resultsnbtr <- data.frame(acc = is.null, prec = is.null, reca = is.null, F1 = is.null)
+y <- 2
+for (y in c(2,4,6,8,10,12,14,16,18,20)) {
+    cmt3 <- table(prednbtr[,y], prednbtr[,y+1])
+    acc <- (cmt3[1,1] + cmt3[2,2]) / (cmt3[1,1] + cmt3[2,2] + cmt3[1,2] + cmt3[2,2])
+    prec <- cmt3[2,2] / (cmt3[2,1] + cmt3[2,2])
+    reca <- cmt3[2,2] / (cmt3[2,2] + cmt3[1,2])
+    F1 <- 2*((prec*reca)/(prec+reca))
+    results1nbtr <- data.frame(acc = acc, prec = prec, reca = reca, F1 = F1)
+    resultsnbtr <- rbind(resultsnbtr, results1nbtr)
+}
+
+write.csv(resultsnb, "resultsnb.csv")
+write.csv(resultsnbtr, "resultsnbtr.csv")
+```
+
+#It's time for Naive Bayes again!!!
+
+```{r}
+#Randomly shuffle the data
+#balbp<-balbp[sample(nrow(balbp)),]
+
+#Create 10 equally size folds
+#folds <- cut(seq(1,nrow(balbp)),breaks=10,labels=FALSE)
+
+pred2nb <- data.frame(id = c(1:250))
+prednb2tr <- data.frame(id = c(1:2250))
+
+#Perform 10 fold cross validation
+for(i in 1:10){
+    testIndexes <- which(folds==i,arr.ind=TRUE)
+    testbp <- balbp[testIndexes, ]
+    trainbp <- balbp[-testIndexes, ]
+    bpnpmodel2 <- naiveBayes(align ~ yes + dwtype + clcol + ga, data = trainbp)
+    pred21nb <- predict(bpnpmodel2, newdata = testbp)
+    pred2nb <- cbind(pred2nb, testbp$align, pred21nb)
+    pred1nb2tr <- predict(bpnpmodel2, newdata = trainbp)
+    prednb2tr <- cbind(prednb2tr, trainbp$align, pred1nb2tr)
+}
+
+colnames(pred2nb) <- c("id", paste(c("a", "p"), rep(1:10, each = 2), sep = ""))
+
+colnames(prednb2tr) <- c("id", paste(c("a", "p"), rep(1:10, each = 2), sep = ""))
+
+#Let's get some statistics happening!
+results2nb <- data.frame(acc = is.null, prec = is.null, reca = is.null, F1 = is.null)
+y <- 2
+for (y in c(2,4,6,8,10,12,14,16,18,20)) {
+    cmt2 <- table(pred2nb[,y], pred2nb[,y+1])
+    acc <- (cmt2[1,1] + cmt2[2,2]) / (cmt2[1,1] + cmt2[2,2] + cmt2[1,2] + cmt2[2,2])
+    prec <- cmt2[2,2] / (cmt2[2,1] + cmt2[2,2])
+    reca <- cmt2[2,2] / (cmt2[2,2] + cmt2[1,2])
+    F1 <- 2*((prec*reca)/(prec+reca))
+    results21nb <- data.frame(acc = acc, prec = prec, reca = reca, F1 = F1)
+    results2nb <- rbind(results2nb, results21nb)
+}
+
+#Let's get summary stats happening for the training set too!
+resultsnb2tr <- data.frame(acc = is.null, prec = is.null, reca = is.null, F1 = is.null)
+y <- 2
+for (y in c(2,4,6,8,10,12,14,16,18,20)) {
+    cmt3 <- table(prednb2tr[,y], prednb2tr[,y+1])
+    acc <- (cmt3[1,1] + cmt3[2,2]) / (cmt3[1,1] + cmt3[2,2] + cmt3[1,2] + cmt3[2,2])
+    prec <- cmt3[2,2] / (cmt3[2,1] + cmt3[2,2])
+    reca <- cmt3[2,2] / (cmt3[2,2] + cmt3[1,2])
+    F1 <- 2*((prec*reca)/(prec+reca))
+    results1nb2tr <- data.frame(acc = acc, prec = prec, reca = reca, F1 = F1)
+    resultsnb2tr <- rbind(resultsnb2tr, results1nb2tr)
+}
+
+write.csv(results2nb, "resultsnb2.csv")
+write.csv(resultsnb2tr, "resultsnb2tr.csv")
+```
+
